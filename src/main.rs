@@ -2,11 +2,13 @@ pub mod cli;
 pub mod constants;
 pub mod database;
 pub mod models;
+pub mod websocket;
 
 pub use cli::*;
 pub use constants::*;
 pub use database::*;
 pub use models::*;
+pub use websocket::*;
 
 use clap::Parser;
 use dotenv::dotenv;
@@ -25,15 +27,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let db = start_db("DATABASE_URL").await?;
 
+    let (ws_sender, ws_server) = start_websocket_server(8080).await;
+
+    tokio::spawn(ws_server);
+
     let mut listener = NearEventListener::builder(rpc_url)
         .account_id(ACCOUNT_TO_LISTEN)
         .method_name(FUNCTION_TO_LISTEN)
-        .last_processed_block(181344295)
+        .last_processed_block(184520318)
         .build()?;
 
     listener
         .start(move |event_log| {
             let db = db.clone();
+            let ws_sender = ws_sender.clone();
             tokio::spawn(async move {
                 println!("Event received: {:?}", event_log);
 
@@ -46,7 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     logs.iter().find(|log| log.event == "register_token")
                 {
                     // Process the register_token event
-                    if let Err(e) = insert_token(&db, register_token_log.clone()).await {
+                    if let Err(e) =
+                        insert_token(&db, register_token_log.clone(), &ws_sender.clone()).await
+                    {
                         eprintln!("Error inserting token: {}", e);
                     }
                     match get_tokens(&db).await {

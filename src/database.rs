@@ -1,4 +1,6 @@
 use crate::models::TokenDTO;
+use crate::websocket::WsSender;
+
 use base64::{engine::general_purpose, Engine as _};
 use bb8::Pool;
 use bb8_postgres::PostgresConnectionManager;
@@ -64,6 +66,7 @@ pub async fn init_db_pool(
 pub async fn insert_token(
     pool: &DbPool,
     event: EventLog,
+    ws_sender: &WsSender,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = pool.get().await?;
 
@@ -91,8 +94,8 @@ pub async fn insert_token(
             &token_data["name"].as_str().ok_or("name not found")?,
             &token_data["symbol"].as_str().ok_or("symbol not found")?,
             &token_data["icon"].as_str().ok_or("icon not found")?,
-            &token_data["reference"].as_str(), 
-            &token_data["reference_hash"].as_str(), 
+            &token_data["reference"].as_str(),
+            &token_data["reference_hash"].as_str(),
             &(token_data["decimals"]
                 .as_i64()
                 .ok_or("decimals not found")? as i16),
@@ -110,6 +113,22 @@ pub async fn insert_token(
     )
     .await?;
 
+    let token = TokenDTO {
+        owner_id: token_data["owner_id"].as_str().unwrap().parse().unwrap(),
+        total_supply: token_data["total_supply"].as_str().unwrap().to_string(),
+        spec: token_data["spec"].as_str().unwrap().to_string(),
+        name: token_data["name"].as_str().unwrap().to_string(),
+        symbol: token_data["symbol"].as_str().unwrap().to_string(),
+        icon: token_data["icon"].as_str().map(|s| s.to_string()),
+        reference: token_data["reference"].as_str().map(|s| s.to_string()),
+        reference_hash: token_data["reference_hash"]
+            .as_str()
+            .map(|s| general_purpose::STANDARD.decode(s).unwrap().into()),
+        decimals: token_data["decimals"].as_i64().unwrap() as u8,
+        image: token_data["image"].as_str().unwrap().to_string(),
+    };
+
+    let _ = ws_sender.send(token.clone());
     Ok(())
 }
 
@@ -123,27 +142,24 @@ pub async fn get_tokens(
 
     let tokens: Vec<TokenDTO> = rows
         .into_iter()
-        .map(|row| {
-            
-            TokenDTO {
-                owner_id: row.get::<_, String>("owner_id").parse().unwrap(),
-                total_supply: row
-                    .get::<_, String>("total_supply")
-                    .trim_matches('"')
-                    .to_string(),
-                spec: row.get("spec"),
-                name: row.get("name"),
-                symbol: row.get("symbol"),
-                icon: row.get("icon"),
-                reference: row.get("reference"),
-                reference_hash: row
-                    .get::<_, Option<String>>("reference_hash")
-                    .map(|s| general_purpose::STANDARD.decode(s).ok())
-                    .flatten()
-                    .map(|v| v.into()),
-                decimals: row.get::<_, i16>("decimals") as u8,
-                image: row.get("image"),
-            }
+        .map(|row| TokenDTO {
+            owner_id: row.get::<_, String>("owner_id").parse().unwrap(),
+            total_supply: row
+                .get::<_, String>("total_supply")
+                .trim_matches('"')
+                .to_string(),
+            spec: row.get("spec"),
+            name: row.get("name"),
+            symbol: row.get("symbol"),
+            icon: row.get("icon"),
+            reference: row.get("reference"),
+            reference_hash: row
+                .get::<_, Option<String>>("reference_hash")
+                .map(|s| general_purpose::STANDARD.decode(s).ok())
+                .flatten()
+                .map(|v| v.into()),
+            decimals: row.get::<_, i16>("decimals") as u8,
+            image: row.get("image"),
         })
         .collect();
 
